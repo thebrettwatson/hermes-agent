@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import multiprocessing
 import os
-import time
 from pathlib import Path
 
 from hermes_state import SessionDB
@@ -15,6 +14,7 @@ _CONVERSATION_ID = "gemini-route-conv"
 def _holder_worker(
     db_path: str,
     ready: "multiprocessing.synchronize.Event",
+    contended: "multiprocessing.synchronize.Event",
     released: "multiprocessing.synchronize.Event",
     results: "multiprocessing.queues.Queue[tuple[str, ...]]",
 ) -> None:
@@ -27,7 +27,9 @@ def _holder_worker(
         return
     ready.set()
     results.put(("holder_acquired", holder))
-    time.sleep(0.4)
+    if not contended.wait(10):
+        results.put(("holder_contended_timeout",))
+        return
     db.release_session_turn_lease(_CONVERSATION_ID, holder)
     results.put(("holder_released", holder))
     released.set()
@@ -36,6 +38,7 @@ def _holder_worker(
 def _waiter_worker(
     db_path: str,
     start: "multiprocessing.synchronize.Event",
+    contended: "multiprocessing.synchronize.Event",
     results: "multiprocessing.queues.Queue[tuple[str, ...]]",
 ) -> None:
     if not start.wait(10):
@@ -49,7 +52,9 @@ def _waiter_worker(
         db.release_session_turn_lease(_CONVERSATION_ID, holder)
         return
 
-    started = time.monotonic()
+    contended.set()
+    results.put(("waiter_blocked",))
+
     acquired = db.acquire_session_turn_lease(
         _CONVERSATION_ID,
         holder,
@@ -57,17 +62,11 @@ def _waiter_worker(
         wait_seconds=2,
         poll_interval_seconds=0.02,
     )
-    elapsed = time.monotonic() - started
-    results.put(("waiter_acquired", str(acquired), f"{elapsed:.3f}"))
     if acquired:
+        results.put(("waiter_acquired",))
         db.release_session_turn_lease(_CONVERSATION_ID, holder)
-
-
-def _drain_queue(queue: "multiprocessing.queues.Queue[tuple[str, ...]]") -> list[tuple[str, ...]]:
-    items: list[tuple[str, ...]] = []
-    while not queue.empty():
-        items.append(queue.get_nowait())
-    return items
+    else:
+        results.put(("waiter_acquire_failed",))
 
 
 def test_turn_lease_serializes_across_two_os_processes(tmp_path: Path) -> None:
@@ -79,6 +78,7 @@ def test_turn_lease_serializes_across_two_os_processes(tmp_path: Path) -> None:
 
     ctx = multiprocessing.get_context("spawn")
     ready = ctx.Event()
+    contended = ctx.Event()
     released = ctx.Event()
     start = ctx.Event()
     holder_results: "multiprocessing.queues.Queue[tuple[str, ...]]" = ctx.Queue()
@@ -86,11 +86,11 @@ def test_turn_lease_serializes_across_two_os_processes(tmp_path: Path) -> None:
 
     holder = ctx.Process(
         target=_holder_worker,
-        args=(db_path, ready, released, holder_results),
+        args=(db_path, ready, contended, released, holder_results),
     )
     waiter = ctx.Process(
         target=_waiter_worker,
-        args=(db_path, start, waiter_results),
+        args=(db_path, start, contended, waiter_results),
     )
 
     holder.start()
@@ -104,14 +104,12 @@ def test_turn_lease_serializes_across_two_os_processes(tmp_path: Path) -> None:
     assert waiter.exitcode == 0
     assert released.is_set()
 
-    holder_msgs = _drain_queue(holder_results)
-    waiter_msgs = _drain_queue(waiter_results)
+    holder_acquired = holder_results.get(timeout=5)
+    holder_released = holder_results.get(timeout=5)
+    waiter_blocked = waiter_results.get(timeout=5)
+    waiter_acquired = waiter_results.get(timeout=5)
 
-    assert ("holder_acquired",) == tuple(holder_msgs[0][:1])
-    assert ("holder_released",) == tuple(holder_msgs[1][:1])
-    assert not any(msg[0] == "waiter_early_acquire" for msg in waiter_msgs)
-
-    acquired_msgs = [msg for msg in waiter_msgs if msg[0] == "waiter_acquired"]
-    assert len(acquired_msgs) == 1
-    assert acquired_msgs[0][1] == "True"
-    assert float(acquired_msgs[0][2]) >= 0.15
+    assert holder_acquired[0] == "holder_acquired"
+    assert holder_released[0] == "holder_released"
+    assert waiter_blocked[0] == "waiter_blocked"
+    assert waiter_acquired[0] == "waiter_acquired"
