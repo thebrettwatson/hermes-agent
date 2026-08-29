@@ -22,8 +22,10 @@ Plus unit coverage for ``GatewayStreamConsumer.delivered_final_matches``.
 
 import asyncio
 import importlib
+import logging
 import sys
 import types
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -132,6 +134,30 @@ class CompleteStreamAgent:
         }
 
 
+class NoDeltaAgent:
+    """Returns a final answer without handing any delta to the consumer."""
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        return {
+            "final_response": "final answer from a no-delta turn",
+            "response_previewed": False,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class _NativeStreamInFlightConsumer(GatewayStreamConsumer):
+    """Marks native streaming in-flight before the normal consumer drain."""
+
+    async def run(self):
+        self._use_native_streaming = True
+        self._native_stream_opened = True
+        await super().run()
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     runner = object.__new__(gateway_run.GatewayRunner)
@@ -158,7 +184,16 @@ def _make_runner(adapter):
     return runner
 
 
-async def _run_streaming_turn(monkeypatch, tmp_path, agent_cls, session_id):
+async def _run_streaming_turn(
+    monkeypatch,
+    tmp_path,
+    agent_cls,
+    session_id,
+    *,
+    platform=Platform.TELEGRAM,
+    streaming_enabled=True,
+    consumer_cls=GatewayStreamConsumer,
+):
     import yaml
 
     (tmp_path / "config.yaml").write_text(
@@ -166,7 +201,7 @@ async def _run_streaming_turn(monkeypatch, tmp_path, agent_cls, session_id):
             {
                 "display": {"tool_progress": "off", "interim_assistant_messages": False},
                 "streaming": {
-                    "enabled": True,
+                    "enabled": streaming_enabled,
                     "edit_interval": 0.01,
                     "buffer_threshold": 1,
                 },
@@ -183,16 +218,18 @@ async def _run_streaming_turn(monkeypatch, tmp_path, agent_cls, session_id):
     fake_run_agent.AIAgent = agent_cls
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    adapter = FinalizeCaptureAdapter()
+    adapter = FinalizeCaptureAdapter(platform=platform)
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
+    stream_consumer_mod = importlib.import_module("gateway.stream_consumer")
+    monkeypatch.setattr(stream_consumer_mod, "GatewayStreamConsumer", consumer_cls)
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.setattr(
         gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
     )
 
     source = SessionSource(
-        platform=Platform.TELEGRAM,
+        platform=platform,
         chat_id="-1001",
         chat_type="group",
     )
@@ -202,9 +239,114 @@ async def _run_streaming_turn(monkeypatch, tmp_path, agent_cls, session_id):
         history=[],
         source=source,
         session_id=session_id,
-        session_key="agent:main:telegram:group:-1001",
+        session_key=f"agent:main:{platform.value}:group:-1001",
     )
     return adapter, result
+
+
+def _duplicate_risk_warnings(caplog):
+    return [
+        record
+        for record in caplog.records
+        if "Normal final-send NOT suppressed" in record.getMessage()
+    ]
+
+
+@pytest.mark.asyncio
+async def test_no_delta_telegram_keeps_normal_final_send_ownership_without_warning(
+    monkeypatch, tmp_path, caplog
+):
+    """Telegram no-delta turns must not log native-stream duplicate risk."""
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        adapter, result = await _run_streaming_turn(
+            monkeypatch,
+            tmp_path,
+            NoDeltaAgent,
+            "sess-no-delta-telegram",
+        )
+
+    assert result["final_response"] == "final answer from a no-delta turn"
+    assert "already_sent" not in result
+    assert adapter.sent == []
+    assert _duplicate_risk_warnings(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_native_stream_in_flight_logs_duplicate_diagnostic_on_telegram(
+    monkeypatch, tmp_path, caplog
+):
+    """Duplicate-risk logging follows native-stream state, not platform name."""
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        adapter, result = await _run_streaming_turn(
+            monkeypatch,
+            tmp_path,
+            NoDeltaAgent,
+            "sess-native-stream-telegram",
+            platform=Platform.TELEGRAM,
+            consumer_cls=_NativeStreamInFlightConsumer,
+        )
+
+    assert result["final_response"] == "final answer from a no-delta turn"
+    assert "already_sent" not in result
+    assert adapter.sent == []
+    diagnostics = _duplicate_risk_warnings(caplog)
+    assert len(diagnostics) == 1
+    assert diagnostics[0].levelno == logging.WARNING
+
+
+@pytest.mark.asyncio
+async def test_no_delta_wecom_native_stream_keeps_duplicate_diagnostic_warning(
+    monkeypatch, tmp_path, caplog
+):
+    """WeCom native-stream in-flight turns still emit the duplicate diagnostic."""
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        adapter, result = await _run_streaming_turn(
+            monkeypatch,
+            tmp_path,
+            NoDeltaAgent,
+            "sess-no-delta-wecom",
+            platform=Platform.WECOM,
+            consumer_cls=_NativeStreamInFlightConsumer,
+        )
+
+    assert result["final_response"] == "final answer from a no-delta turn"
+    assert "already_sent" not in result
+    assert adapter.sent == []
+    diagnostics = _duplicate_risk_warnings(caplog)
+    assert len(diagnostics) == 1
+    assert diagnostics[0].levelno == logging.WARNING
+
+
+@pytest.mark.asyncio
+async def test_no_consumer_skips_duplicate_diagnostic_warning(
+    monkeypatch, tmp_path, caplog
+):
+    """When streaming is off there is no consumer and no duplicate-risk log."""
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        adapter, result = await _run_streaming_turn(
+            monkeypatch,
+            tmp_path,
+            NoDeltaAgent,
+            "sess-no-consumer",
+            streaming_enabled=False,
+        )
+
+    assert result["final_response"] == "final answer from a no-delta turn"
+    assert "already_sent" not in result
+    assert adapter.sent == []
+    assert _duplicate_risk_warnings(caplog) == []
+
+
+def test_only_wecom_adapter_declares_native_streaming_support():
+    """Lock: native streaming is WeCom-only at the adapter class level."""
+    repo_root = Path(__file__).resolve().parents[2]
+    adapters_dir = repo_root / "plugins" / "platforms"
+    native_adapters = []
+    for adapter_path in sorted(adapters_dir.glob("*/adapter.py")):
+        text = adapter_path.read_text(encoding="utf-8")
+        if "SUPPORTS_NATIVE_STREAMING = True" in text:
+            native_adapters.append(adapter_path.parent.name)
+    assert native_adapters == ["wecom"]
 
 
 # ---------------------------------------------------------------------------

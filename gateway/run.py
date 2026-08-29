@@ -31150,20 +31150,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Failed to edit streamed message for session %s: %s",
                             session_key or "?", _edit_err,
                         )
-            elif _sc is not None and not _is_empty_sentinel:
-                # DUPLICATE-RISK DIAGNOSTIC: a stream consumer existed for this
-                # turn but suppression did NOT fire, so the gateway's normal
-                # final-send is about to run. On WeCom this is the exact window
-                # that produced "回复了两条" — a final-frame ack still in flight
-                # (final_content_delivered not yet set) while this send races
-                # ahead. Log the decision inputs so a recurrence can be pinned to
+            elif (
+                _sc is not None
+                and not _is_empty_sentinel
+                and (
+                    getattr(_sc, "_use_native_streaming", False)
+                    or getattr(_sc, "_native_stream_opened", False)
+                )
+            ):
+                # DUPLICATE-RISK DIAGNOSTIC: native streaming was active for
+                # this turn but suppression did NOT fire, so the gateway's
+                # normal final-send is about to run while a native stream may
+                # still be in flight (final_content_delivered not yet set).
+                # Log the decision inputs so a recurrence can be pinned to
                 # "signal never set" vs "ack-pending race".
                 # See docs/rca-wecom-stream-final-ack-timeout-duplicate.md.
                 logger.warning(
                     "Normal final-send NOT suppressed despite active stream "
                     "consumer for session %s: streamed=%s previewed=%s "
                     "content_delivered=%s transformed=%s final_len=%d — "
-                    "possible duplicate send (see wecom ack-timeout RCA).",
+                    "possible duplicate send (see native-stream ack-timeout RCA).",
                     session_key or "?",
                     _streamed,
                     _previewed,
