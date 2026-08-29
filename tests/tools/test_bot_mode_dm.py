@@ -638,3 +638,67 @@ def test_dm_dir_rejects_precreated_symlink(tmp_path, monkeypatch):
 
     with pytest.raises(PermissionError, match="not a directory"):
         bot_mode_dm._dm_dir()
+
+
+# ── CLI wrapper alias map ────────────────────────────────────────────────────
+
+
+def test_resolve_local_name_maps_alias_to_profile(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.profiles.build_alias_map",
+        lambda: {"gemini": "glm"},
+    )
+    roster = ["default", "gemini", "researcher"]
+    assert bot_mode_dm._resolve_local_name("@glm", roster) == "gemini"
+    assert bot_mode_dm._resolve_local_name("glm", roster) == "gemini"
+
+
+def test_handle_emits_alias_for_profile(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.profiles.build_alias_map",
+        lambda: {"gemini": "glm"},
+    )
+    assert bot_mode_dm._handle("gemini") == "glm"
+    assert bot_mode_dm._handle("default") == "hermes"
+
+
+def test_alias_map_failure_falls_back_to_profile_name(monkeypatch):
+    def boom():
+        raise RuntimeError("alias map unavailable")
+
+    monkeypatch.setattr("hermes_cli.profiles.build_alias_map", boom)
+    roster = ["default", "gemini"]
+    assert bot_mode_dm._resolve_local_name("@gemini", roster) == "gemini"
+    assert bot_mode_dm._handle("gemini") == "gemini"
+
+
+def test_local_roster_skips_reserved_profiles_default_dir(tmp_path, monkeypatch):
+    """Root default + profiles/default must not emit two @hermes entries."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "profiles" / "default").mkdir(parents=True)
+    gemini = home / "profiles" / "gemini"
+    gemini.mkdir(parents=True)
+    (gemini / "profile.yaml").write_text(
+        textwrap.dedent(
+            """\
+            description: gemini profile
+            ui_meta:
+              hermes-bots:
+                shape: cloud
+            """
+        ),
+        encoding="utf-8",
+    )
+
+    roster = bot_mode_dm._local_roster(home)
+    assert roster.count("default") == 1
+    assert roster == ["default", "gemini"]
+
+    monkeypatch.setattr(
+        "hermes_cli.profiles.build_alias_map",
+        lambda: {"gemini": "glm"},
+    )
+    assert bot_mode_dm._resolve_local_name("hermes", roster) == "default"
+    assert bot_mode_dm._resolve_local_name("gemini", roster) == "gemini"
+    assert bot_mode_dm._handle("default") == "hermes"

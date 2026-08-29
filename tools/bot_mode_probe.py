@@ -85,7 +85,8 @@ def _roster(root: Path) -> list[tuple[str, Path]]:
         profiles = root / "profiles"
         if profiles.is_dir():
             for child in sorted(profiles.iterdir()):
-                if child.is_dir():
+                # Root ~/.hermes is the default profile; profiles/default is reserved.
+                if child.is_dir() and child.name != "default":
                     entries.append((child.name, child))
     except Exception:
         pass
@@ -118,9 +119,21 @@ def _soul_has_protocol(profile_dir: Path) -> bool:
         return False
 
 
+def _profile_handle(name: str) -> str:
+    """Public @handle for a profile (default→hermes; honors CLI wrapper aliases)."""
+    if name == "default":
+        return "hermes"
+    try:
+        from hermes_cli.profiles import build_alias_map
+
+        return build_alias_map().get(name, name)
+    except Exception:
+        return name
+
+
 def _handle(name: str) -> str:
     # The mention middleware aliases the default profile as @hermes.
-    return "hermes" if name == "default" else name
+    return _profile_handle(name)
 
 
 def _profile_role(profile_dir: Path) -> str:

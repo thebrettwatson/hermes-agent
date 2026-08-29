@@ -278,3 +278,52 @@ def test_fingerprint_changes_when_a_peer_is_registered(tmp_path):
     )
     after = bot_mode_probe.capability_fingerprint(home)
     assert before != after
+
+
+# ── CLI wrapper alias map ────────────────────────────────────────────────────
+
+
+def test_profile_handle_emits_alias(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.profiles.build_alias_map",
+        lambda: {"gemini": "glm"},
+    )
+    assert bot_mode_probe._profile_handle("gemini") == "glm"
+    assert bot_mode_probe._handle("gemini") == "glm"
+    assert bot_mode_probe._handle("default") == "hermes"
+
+
+def test_profile_handle_falls_back_when_alias_map_raises(monkeypatch):
+    def boom():
+        raise RuntimeError("alias map unavailable")
+
+    monkeypatch.setattr("hermes_cli.profiles.build_alias_map", boom)
+    assert bot_mode_probe._profile_handle("gemini") == "gemini"
+    assert bot_mode_probe._handle("gemini") == "gemini"
+
+
+def test_roster_section_uses_alias_handles(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.profiles.build_alias_map",
+        lambda: {"gemini": "glm"},
+    )
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _make_bot_profile(home, "gemini", managed=True)
+    _make_bot_profile(home, "researcher", managed=True)
+
+    section = bot_mode_probe.get_bot_mode_protocol_section(home)
+    assert "`@glm`" in section
+    assert "`@gemini`" not in section
+
+
+def test_roster_skips_reserved_profiles_default_dir(tmp_path):
+    """profiles/default is reserved; root ~/.hermes is the sole default entry."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "profiles" / "default").mkdir(parents=True)
+    _make_bot_profile(home, "gemini", managed=True)
+
+    names = [name for name, _profile_dir in bot_mode_probe._roster(home)]
+    assert names.count("default") == 1
+    assert names == ["default", "gemini"]
