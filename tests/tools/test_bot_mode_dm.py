@@ -638,3 +638,35 @@ def test_dm_dir_rejects_precreated_symlink(tmp_path, monkeypatch):
 
     with pytest.raises(PermissionError, match="not a directory"):
         bot_mode_dm._dm_dir()
+
+
+# ── CLI wrapper alias map ────────────────────────────────────────────────────
+
+
+def test_resolve_local_name_maps_alias_to_profile(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.profiles.build_alias_map",
+        lambda: {"gemini": "glm"},
+    )
+    roster = ["default", "gemini", "researcher"]
+    assert bot_mode_dm._resolve_local_name("@glm", roster) == "gemini"
+    assert bot_mode_dm._resolve_local_name("glm", roster) == "gemini"
+
+
+def test_handle_emits_alias_for_profile(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.profiles.build_alias_map",
+        lambda: {"gemini": "glm"},
+    )
+    assert bot_mode_dm._handle("gemini") == "glm"
+    assert bot_mode_dm._handle("default") == "hermes"
+
+
+def test_alias_map_failure_falls_back_to_profile_name(monkeypatch):
+    def boom():
+        raise RuntimeError("alias map unavailable")
+
+    monkeypatch.setattr("hermes_cli.profiles.build_alias_map", boom)
+    roster = ["default", "gemini"]
+    assert bot_mode_dm._resolve_local_name("@gemini", roster) == "gemini"
+    assert bot_mode_dm._handle("gemini") == "gemini"

@@ -208,12 +208,19 @@ def _peers(root: Path) -> list[str]:
 
 
 def _handle(name: str) -> str:
-    return "hermes" if name == "default" else name
+    if name == "default":
+        return "hermes"
+    try:
+        from hermes_cli.profiles import build_alias_map
+
+        return build_alias_map().get(name, name)
+    except Exception:
+        return name
 
 
 def _resolve_local_name(target: str, roster: list[str]) -> Optional[str]:
     """Map a target handle to a profile name ('hermes' → 'default')."""
-    want = target.strip()
+    want = target.strip().lstrip("@")
     if not want:
         return None
     if want.lower() == "hermes":
@@ -221,6 +228,14 @@ def _resolve_local_name(target: str, roster: list[str]) -> Optional[str]:
     for name in roster:
         if name.lower() == want.lower():
             return name
+    try:
+        from hermes_cli.profiles import build_alias_map
+
+        for profile, alias in build_alias_map().items():
+            if alias.lower() == want.lower() and profile in roster:
+                return profile
+    except Exception:
+        pass
     return None
 
 
