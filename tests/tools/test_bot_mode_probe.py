@@ -315,3 +315,15 @@ def test_roster_section_uses_alias_handles(tmp_path, monkeypatch):
     section = bot_mode_probe.get_bot_mode_protocol_section(home)
     assert "`@glm`" in section
     assert "`@gemini`" not in section
+
+
+def test_roster_skips_reserved_profiles_default_dir(tmp_path):
+    """profiles/default is reserved; root ~/.hermes is the sole default entry."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "profiles" / "default").mkdir(parents=True)
+    _make_bot_profile(home, "gemini", managed=True)
+
+    names = [name for name, _profile_dir in bot_mode_probe._roster(home)]
+    assert names.count("default") == 1
+    assert names == ["default", "gemini"]

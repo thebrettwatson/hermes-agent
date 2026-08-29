@@ -85,7 +85,8 @@ def _roster(root: Path) -> list[tuple[str, Path]]:
         profiles = root / "profiles"
         if profiles.is_dir():
             for child in sorted(profiles.iterdir()):
-                if child.is_dir():
+                # Root ~/.hermes is the default profile; profiles/default is reserved.
+                if child.is_dir() and child.name != "default":
                     entries.append((child.name, child))
     except Exception:
         pass

@@ -1,7 +1,7 @@
 # H2-D Lease Adjudication Receipt
 
-**Branch:** `local/hermes-integration-route-h1-botmode-20260828`  
-**Date:** 2026-08-28  
+**Branch:** `local/hermes-integration-route-h1-botmode-20260828`
+**Date:** 2026-08-28
 **Scope:** Parent H2-D adjudication — durable SessionDB lease for routed Gemini composition
 
 ## Decision
@@ -15,11 +15,11 @@
   - Owner-checked release
   - Expiry and refresh semantics
 - Existing tests: **31 passed** via Homebrew pytest (SessionDB lease suite).
-- **No** two-process OS-level routed Gemini contention test exists or was added.
+- A two-process OS-level contention test now exists in `tests/state/test_session_turn_lease_subprocess.py` (tmp `state.db` only; no live gateway mutation).
 
 ## Residual
 
-**ACCEPTED_RESIDUAL** — two-process routed composition remains unproven at the OS level. This is an accepted gap; no H2 lease/mutex code is committed on this branch.
+**ACCEPTED_RESIDUAL** — routed Gemini composition is not proven against live gateway `state.db` instances. The subprocess contention test covers cross-process lease serialization on an isolated database; no H2 lease/mutex schema changes accompany it.
 
 ## Related work on this branch
 
